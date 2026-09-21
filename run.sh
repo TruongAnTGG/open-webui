@@ -198,7 +198,7 @@ setup_venv() {
     local created=false
 
     if command -v uv &>/dev/null; then
-      if uv venv "$VENV_DIR" --python "$py_bin" 2>/dev/null; then
+      if uv venv "$VENV_DIR" --seed --python "$py_bin" 2>/dev/null; then
         created=true
       fi
     fi
@@ -221,12 +221,29 @@ setup_venv() {
 install_backend() {
   setup_venv
   log_info "Đang cài đặt các thư viện Python backend..."
+
+  # 1. Cài trước PyTorch bản CPU siêu nhẹ (~150MB) để tránh PyPI tự tải Triton + CUDA nặng ~6GB
+  if ! "${VENV_DIR}/bin/python" -c "import torch" &>/dev/null; then
+    log_info "Cài đặt PyTorch CPU (tiết kiệm hơn 6GB ổ cứng, tránh lỗi Triton)..."
+    if command -v uv &>/dev/null; then
+      uv pip install --python "${VENV_DIR}/bin/python" --no-cache \
+        'torch<=2.9.1' torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cpu || true
+    fi
+  fi
+
+  # 2. Cài đặt các thư viện còn lại với --no-cache để không tốn ổ cứng
+  log_info "Cài đặt các gói phụ thuộc Open WebUI..."
   if command -v uv &>/dev/null; then
-    uv pip install --python "${VENV_DIR}/bin/python" -r "${SCRIPT_DIR}/backend/requirements.txt" || \
-      "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/backend/requirements.txt"
+    uv pip install --python "${VENV_DIR}/bin/python" --no-cache -r "${SCRIPT_DIR}/backend/requirements.txt"
   else
-    "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
-    "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/backend/requirements.txt"
+    if [[ -f "${VENV_DIR}/bin/pip" ]]; then
+      "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+      "${VENV_DIR}/bin/pip" install --no-cache-dir -r "${SCRIPT_DIR}/backend/requirements.txt"
+    else
+      "${VENV_DIR}/bin/python" -m pip install --upgrade pip setuptools wheel
+      "${VENV_DIR}/bin/python" -m pip install --no-cache-dir -r "${SCRIPT_DIR}/backend/requirements.txt"
+    fi
   fi
   log_success "Cài đặt backend dependencies thành công!"
 }
