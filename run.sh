@@ -61,11 +61,14 @@ cleanup_native_processes() {
     pkill -f "open_webui.main:app" 2>/dev/null || true
     sleep 1
   fi
-  if pgrep -f "ollama serve" &>/dev/null; then
-    log_info "Dừng tiến trình Ollama native cũ để nhường cổng cho Docker..."
-    pkill -f "ollama serve" 2>/dev/null || true
+
+  # Thử dừng Ollama systemd nếu đang chạy trên host
+  if command -v systemctl &>/dev/null && systemctl is-active --quiet ollama 2>/dev/null; then
+    log_info "Phát hiện Ollama đang chạy qua systemd trên host. Đang dừng để nhường cổng..."
+    sudo systemctl stop ollama 2>/dev/null || true
     sleep 1
   fi
+  pkill -f "ollama serve" 2>/dev/null || true
 }
 
 build_openwebui() {
@@ -111,12 +114,20 @@ start_all() {
 
   detect_gpu
 
-  log_info "Đang chạy $OLLAMA_CONTAINER trên cổng $OLLAMA_PORT..."
+  local host_ollama_port="$OLLAMA_PORT"
+  # Kiểm tra xem cổng 11434 trên host có đang bị dịch vụ native khác chiếm không
+  if curl -sf "http://127.0.0.1:${OLLAMA_PORT}/api/version" &>/dev/null; then
+    log_warn "Cổng host ${OLLAMA_PORT} đang có dịch vụ Ollama native khác chiếm giữ."
+    log_info "Tự động đổi cổng host sang 11435 để tránh xung đột (2 container trong Docker vẫn gọi nhau qua cổng 11434 bình thường)..."
+    host_ollama_port=11435
+  fi
+
+  log_info "Đang chạy $OLLAMA_CONTAINER trên cổng host $host_ollama_port..."
   docker run -d \
     --name "$OLLAMA_CONTAINER" \
     --network "$NETWORK_NAME" \
     ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} \
-    -p "${OLLAMA_PORT}:11434" \
+    -p "${host_ollama_port}:11434" \
     -v ollama:/root/.ollama \
     --restart unless-stopped \
     "$OLLAMA_IMAGE" >/dev/null
