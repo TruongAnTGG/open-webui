@@ -259,7 +259,38 @@ start_dev() {
   echo ""
 
   cd "${SCRIPT_DIR}/backend"
-  exec python -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --reload --forwarded-allow-ips "*"
+  exec "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --reload --forwarded-allow-ips "*"
+}
+
+status_openwebui() {
+  local pids
+  pids=$(pgrep -f "open_webui.main:app" 2>/dev/null || true)
+
+  if curl -sf "http://127.0.0.1:${PORT}/health" &>/dev/null; then
+    log_success "Open WebUI ĐANG CHẠY tại http://localhost:${PORT}"
+    if [[ -n "$pids" ]]; then
+      echo "  -> Process ID (PID): $pids"
+    fi
+    echo "  -> Health check: http://localhost:${PORT}/health [200 OK]"
+    echo "  -> Kết nối Ollama: ${OLLAMA_BASE_URL}"
+  elif [[ -n "$pids" ]]; then
+    log_warn "Tiến trình Open WebUI đang chạy (PID: $pids) nhưng cổng $PORT chưa sẵn sàng phản hồi (đang khởi động)."
+  else
+    log_warn "Open WebUI ĐANG DỪNG (không hoạt động trên cổng ${PORT})."
+  fi
+}
+
+stop_openwebui() {
+  local pids
+  pids=$(pgrep -f "open_webui.main:app" 2>/dev/null || true)
+  if [[ -n "$pids" ]]; then
+    log_info "Đang dừng Open WebUI (PID: $pids)..."
+    kill $pids 2>/dev/null || true
+    sleep 1
+    log_success "Đã dừng Open WebUI."
+  else
+    log_warn "Open WebUI hiện không chạy."
+  fi
 }
 
 case "${1:-start}" in
@@ -271,6 +302,12 @@ case "${1:-start}" in
     ;;
   reload)
     start_openwebui true
+    ;;
+  status)
+    status_openwebui
+    ;;
+  stop|down)
+    stop_openwebui
     ;;
   build)
     build_frontend
@@ -284,15 +321,17 @@ case "${1:-start}" in
     log_success "Cài đặt tất cả dependencies hoàn tất!"
     ;;
   help|-h|--help)
-    echo "Sử dụng: $0 {start|dev|build|install|reload}"
+    echo "Sử dụng: $0 {start|status|stop|dev|build|install|reload}"
     echo "  start   : Tự chuẩn bị môi trường và chạy Open WebUI (mặc định cổng 8080)"
+    echo "  status  : Kiểm tra xem Open WebUI có đang chạy hay không"
+    echo "  stop    : Dừng dịch vụ Open WebUI"
     echo "  dev     : Chạy backend với --reload cho lập trình viên"
     echo "  build   : Chỉ build lại frontend từ code mới (npm run build)"
     echo "  install : Cài đặt lại thư viện Python (.venv) và Node.js (node_modules)"
     exit 0
     ;;
   *)
-    echo "Sử dụng: $0 {start|dev|build|install|reload}"
+    echo "Sử dụng: $0 {start|status|stop|dev|build|install|reload}"
     exit 1
     ;;
 esac
