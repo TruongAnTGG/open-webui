@@ -5,11 +5,12 @@ set -euo pipefail
 # Script triển khai Open WebUI và Ollama bằng Docker
 # ---------------------------------------------------------------------------
 
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly NETWORK_NAME="open-webui-net"
 readonly OLLAMA_CONTAINER="ollama"
 readonly WEBUI_CONTAINER="open-webui"
 readonly OLLAMA_IMAGE="ollama/ollama:latest"
-readonly WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
+readonly WEBUI_IMAGE="open-webui:local"
 
 readonly WEBUI_PORT="${OPEN_WEBUI_PORT:-3000}"
 readonly OLLAMA_PORT="${OLLAMA_PORT:-11434}"
@@ -49,10 +50,31 @@ detect_gpu() {
   fi
 }
 
+build_webui() {
+  check_docker
+  log_info "Bắt đầu build image Open WebUI từ source code hiện tại ($SCRIPT_DIR)..."
+  docker build -t "$WEBUI_IMAGE" "$SCRIPT_DIR"
+  log_success "Build image '$WEBUI_IMAGE' thành công!"
+}
+
 start_containers() {
+  local skip_build=false
+  for arg in "$@"; do
+    if [[ "$arg" == "--no-build" || "$arg" == "--skip-build" ]]; then
+      skip_build=true
+    fi
+  done
+
   check_docker
 
-  # 1. Tạo Docker network nếu chưa tồn tại
+  # 1. Build image Open WebUI từ code local (nếu không yêu cầu skip)
+  if [[ "$skip_build" == false ]]; then
+    build_webui
+  else
+    log_info "Bỏ qua bước build image (sử dụng image '$WEBUI_IMAGE' có sẵn)."
+  fi
+
+  # 2. Tạo Docker network nếu chưa tồn tại
   if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
     log_info "Đang tạo Docker network: $NETWORK_NAME..."
     docker network create "$NETWORK_NAME" >/dev/null
@@ -60,7 +82,7 @@ start_containers() {
     log_info "Docker network '$NETWORK_NAME' đã sẵn sàng."
   fi
 
-  # 2. Khởi động Ollama
+  # 3. Khởi động Ollama
   log_info "Kiểm tra container Ollama hiện có..."
   docker rm -f "$OLLAMA_CONTAINER" >/dev/null 2>&1 || true
 
@@ -76,11 +98,11 @@ start_containers() {
     --restart unless-stopped \
     "$OLLAMA_IMAGE"
 
-  # 3. Khởi động Open WebUI
+  # 4. Khởi động Open WebUI (từ image local vừa build)
   log_info "Kiểm tra container Open WebUI hiện có..."
   docker rm -f "$WEBUI_CONTAINER" >/dev/null 2>&1 || true
 
-  log_info "Đang khởi động $WEBUI_CONTAINER trên cổng $WEBUI_PORT..."
+  log_info "Đang khởi động $WEBUI_CONTAINER từ image '$WEBUI_IMAGE' trên cổng $WEBUI_PORT..."
   docker run -d \
     --name "$WEBUI_CONTAINER" \
     --network "$NETWORK_NAME" \
@@ -146,14 +168,17 @@ pull_model() {
 
 case "${1:-start}" in
   start|up)
-    start_containers
+    start_containers "$@"
+    ;;
+  build)
+    build_webui
     ;;
   stop|down)
     stop_containers
     ;;
   restart)
     stop_containers
-    start_containers
+    start_containers "$@"
     ;;
   status)
     show_status
@@ -165,11 +190,11 @@ case "${1:-start}" in
     pull_model "$@"
     ;;
   help|-h|--help)
-    echo "Sử dụng: $0 {start|stop|restart|status|logs [ollama|open-webui]|pull <model>}"
+    echo "Sử dụng: $0 {start [--no-build]|build|stop|restart|status|logs [ollama|open-webui]|pull <model>}"
     exit 0
     ;;
   *)
-    echo "Sử dụng: $0 {start|stop|restart|status|logs [ollama|open-webui]|pull <model>}"
+    echo "Sử dụng: $0 {start [--no-build]|build|stop|restart|status|logs [ollama|open-webui]|pull <model>}"
     exit 1
     ;;
 esac
