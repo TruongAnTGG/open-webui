@@ -132,13 +132,19 @@ find_python() {
     fi
   done
 
-  # 3. Thử tải qua uv nếu có
+  # 3. Tự động dùng uv để chuẩn bị Python 3.11 tương thích
+  if ! command -v uv &>/dev/null; then
+    log_info "Đang chuẩn bị công cụ quản lý Python uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || true
+    export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+  fi
+
   if command -v uv &>/dev/null; then
     local uv_py
     uv_py=$(uv python find 3.11 2>/dev/null || true)
     if [[ -z "$uv_py" ]]; then
-      log_info "Đang dùng uv để tải Python 3.11 tương thích..."
-      uv python install 3.11 &>/dev/null || true
+      log_info "Đang tự động tải Python 3.11 tương thích cho Open WebUI..."
+      uv python install 3.11 >/dev/null 2>&1 || true
       uv_py=$(uv python find 3.11 2>/dev/null || true)
     fi
     if [[ -n "$uv_py" ]]; then
@@ -281,12 +287,12 @@ start_openwebui() {
   export HOST
 
   log_info "Đang khởi động Open WebUI Portal trên cổng $PORT..."
-  mkdir -p "$WEBUI_LOG_DIR"
-  cd "${SCRIPT_DIR}/backend"
-
+  # Khởi chạy uvicorn ở background chế độ Production (không reload, 1 worker, tối ưu websocket)
   nohup "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app \
     --host "$HOST" \
     --port "$PORT" \
+    --workers 1 \
+    --ws-per-message-deflate "${UVICORN_WS_PER_MESSAGE_DEFLATE:-true}" \
     --forwarded-allow-ips "*" > "$WEBUI_LOG_FILE" 2>&1 &
 
   local pid=$!
@@ -404,6 +410,12 @@ show_logs() {
 
 start_dev() {
   setup_venv
+
+  if ! "${VENV_DIR}/bin/python" -c "import uvicorn, fastapi" &>/dev/null; then
+    log_warn "Thư viện backend chưa được cài đặt trong .venv. Đang tiến hành cài đặt..."
+    install_backend
+  fi
+
   prepare_secret_key
   export OLLAMA_BASE_URL
   export PORT
@@ -420,9 +432,9 @@ start_dev() {
 # ===========================================================================
 
 case "${1:-all}" in
-  all|start|up)
+  all|start|up|prod|production)
     echo "================================================="
-    echo "  Khởi động Ollama & Open WebUI Portal (Native)"
+    echo "  Khởi động Ollama & Open WebUI Portal (Production)"
     echo "================================================="
     start_ollama
     echo ""
