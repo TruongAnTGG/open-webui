@@ -17,6 +17,8 @@ readonly OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 readonly GREEN='\033[0;32m'
 readonly BLUE='\033[0;34m'
 readonly YELLOW='\033[1;33m'
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+
 readonly RED='\033[0;31m'
 readonly NC='\033[0m'
 
@@ -26,18 +28,65 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 find_python() {
+  # 1. Thử tìm Python 3.11 (khuyên dùng nhất bởi Open WebUI)
   if command -v python3.11 &>/dev/null; then
     echo "python3.11"
-  elif command -v python3.12 &>/dev/null; then
-    echo "python3.12"
-  elif command -v python3.10 &>/dev/null; then
-    echo "python3.10"
-  elif command -v python3 &>/dev/null; then
-    echo "python3"
-  else
-    log_error "Không tìm thấy Python 3 trên hệ thống! Vui lòng cài đặt Python 3.11."
-    exit 1
+    return 0
   fi
+
+  # 2. Thử tìm Python 3.12 hoặc 3.10
+  for candidate in python3.12 python3.10; do
+    if command -v "$candidate" &>/dev/null; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  # 3. Nếu có uv, tự động tìm hoặc tải Python 3.11
+  if command -v uv &>/dev/null; then
+    local uv_py
+    uv_py=$(uv python find 3.11 2>/dev/null || true)
+    if [[ -z "$uv_py" ]]; then
+      log_info "Đang dùng uv để tự động tải Python 3.11 tương thích..."
+      uv python install 3.11 &>/dev/null || true
+      uv_py=$(uv python find 3.11 2>/dev/null || true)
+    fi
+    if [[ -n "$uv_py" ]]; then
+      echo "$uv_py"
+      return 0
+    fi
+  fi
+
+  # 4. Kiểm tra python3 mặc định của hệ thống xem có < 3.14 không
+  if command -v python3 &>/dev/null; then
+    local is_compat
+    is_compat=$(python3 -c 'import sys; print(sys.version_info >= (3, 10) and sys.version_info < (3, 14))' 2>/dev/null || echo "False")
+    if [[ "$is_compat" == "True" ]]; then
+      echo "python3"
+      return 0
+    fi
+  fi
+
+  # Không có phiên bản tương thích
+  local cur_ver
+  cur_ver=$(python3 --version 2>/dev/null || echo "Không xác định")
+  log_error "Phiên bản Python hiện tại trên máy là $cur_ver."
+  echo ""
+  echo "Các thư viện AI của Open WebUI (unstructured, torch, chromadb) chưa hỗ trợ Python >= 3.14!"
+  echo "Yêu cầu: Python 3.11 (hoặc 3.12, 3.10)."
+  echo ""
+  echo "Cách khắc phục nhanh nhất trên server:"
+  echo "  Cách 1 (Khuyên dùng - Nhanh nhất & không cần sudo):"
+  echo "     curl -LsSf https://astral.sh/uv/install.sh | sh"
+  echo "     source ~/.cargo/env 2>/dev/null || true"
+  echo "     uv python install 3.11"
+  echo ""
+  echo "  Cách 2 (Cài Python 3.11 qua APT trên Ubuntu/Debian):"
+  echo "     sudo add-apt-repository -y ppa:deadsnakes/ppa"
+  echo "     sudo apt update"
+  echo "     sudo apt install -y python3.11 python3.11-venv python3.11-dev"
+  echo ""
+  exit 1
 }
 
 check_node() {
@@ -50,13 +99,25 @@ check_node() {
 }
 
 setup_venv() {
+  # Kiểm tra nếu .venv đã có nhưng dùng Python >= 3.14 không tương thích
+  if [[ -f "${VENV_DIR}/bin/activate" ]]; then
+    local venv_compat
+    venv_compat=$("${VENV_DIR}/bin/python" -c 'import sys; print(sys.version_info >= (3, 10) and sys.version_info < (3, 14))' 2>/dev/null || echo "False")
+    if [[ "$venv_compat" != "True" ]]; then
+      local venv_ver
+      venv_ver=$("${VENV_DIR}/bin/python" --version 2>/dev/null || echo "")
+      log_warn "Thư mục .venv hiện tại dùng $venv_ver (không tương thích, cần < 3.14). Đang xoá để tạo lại..."
+      rm -rf "$VENV_DIR"
+    fi
+  fi
+
   local py_bin
   py_bin=$(find_python)
 
   # Kiểm tra nếu thư mục .venv chưa tồn tại hoặc bị lỗi (thiếu file activate)
   if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     if [[ -d "$VENV_DIR" ]]; then
-      log_warn "Phát hiện thư mục .venv cũ bị lỗi (thiếu activate). Đang dọn dẹp để tạo lại..."
+      log_warn "Phát hiện thư mục .venv cũ bị lỗi. Đang dọn dẹp để tạo lại..."
       rm -rf "$VENV_DIR"
     fi
 
@@ -73,8 +134,7 @@ setup_venv() {
       if ! "$py_bin" -m venv "$VENV_DIR"; then
         log_error "Tạo môi trường ảo .venv thất bại!"
         echo ""
-        echo "-> Trên Ubuntu/Debian, gói venv thường chưa được cài sẵn."
-        echo "   Vui lòng chạy lệnh sau trên server rồi chạy lại script:"
+        echo "-> Trên Ubuntu/Debian, vui lòng chạy lệnh sau rồi thử lại:"
         echo "   sudo apt update && sudo apt install -y python3-venv python3-pip python3-dev build-essential"
         echo ""
         exit 1
