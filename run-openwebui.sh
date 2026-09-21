@@ -53,12 +53,37 @@ setup_venv() {
   local py_bin
   py_bin=$(find_python)
 
-  if [[ ! -d "$VENV_DIR" ]]; then
+  # Kiểm tra nếu thư mục .venv chưa tồn tại hoặc bị lỗi (thiếu file activate)
+  if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
+    if [[ -d "$VENV_DIR" ]]; then
+      log_warn "Phát hiện thư mục .venv cũ bị lỗi (thiếu activate). Đang dọn dẹp để tạo lại..."
+      rm -rf "$VENV_DIR"
+    fi
+
     log_info "Đang tạo môi trường ảo Python (.venv) bằng $py_bin..."
+    local created=false
+
     if command -v uv &>/dev/null; then
-      uv venv "$VENV_DIR" --python "$py_bin"
-    else
-      "$py_bin" -m venv "$VENV_DIR"
+      if uv venv "$VENV_DIR" --python "$py_bin" 2>/dev/null; then
+        created=true
+      fi
+    fi
+
+    if [[ "$created" == false ]]; then
+      if ! "$py_bin" -m venv "$VENV_DIR"; then
+        log_error "Tạo môi trường ảo .venv thất bại!"
+        echo ""
+        echo "-> Trên Ubuntu/Debian, gói venv thường chưa được cài sẵn."
+        echo "   Vui lòng chạy lệnh sau trên server rồi chạy lại script:"
+        echo "   sudo apt update && sudo apt install -y python3-venv python3-pip python3-dev build-essential"
+        echo ""
+        exit 1
+      fi
+    fi
+
+    if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
+      log_error "Không tìm thấy file ${VENV_DIR}/bin/activate sau khi tạo .venv."
+      exit 1
     fi
     log_success "Đã tạo .venv thành công!"
   fi
@@ -72,10 +97,11 @@ install_backend() {
   setup_venv
   log_info "Đang cài đặt các thư viện Python backend..."
   if command -v uv &>/dev/null; then
-    uv pip install -r "${SCRIPT_DIR}/backend/requirements.txt"
+    uv pip install --python "${VENV_DIR}/bin/python" -r "${SCRIPT_DIR}/backend/requirements.txt" || \
+      "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/backend/requirements.txt"
   else
-    pip install --upgrade pip
-    pip install -r "${SCRIPT_DIR}/backend/requirements.txt"
+    "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+    "${VENV_DIR}/bin/pip" install -r "${SCRIPT_DIR}/backend/requirements.txt"
   fi
   log_success "Cài đặt backend dependencies thành công!"
 }
@@ -111,15 +137,26 @@ start_openwebui() {
 
   setup_venv
 
-  # Kiểm tra xem uvicorn và fastapi đã cài chưa
-  if ! python -c "import uvicorn, fastapi" &>/dev/null; then
-    log_warn "Thư viện backend chưa được cài đặt đầy đủ. Đang tiến hành cài đặt..."
+  # Kiểm tra xem uvicorn và fastapi đã cài trong .venv chưa
+  if ! "${VENV_DIR}/bin/python" -c "import uvicorn, fastapi" &>/dev/null; then
+    log_warn "Thư viện backend chưa được cài đặt trong .venv. Đang tiến hành cài đặt..."
     install_backend
   fi
 
   # Kiểm tra build frontend
   if [[ ! -f "${FRONTEND_BUILD_DIR}/index.html" ]]; then
-    log_warn "Chưa tìm thấy bản build frontend. Đang tiến hành build..."
+    log_warn "Chưa tìm thấy bản build frontend tại ${FRONTEND_BUILD_DIR}."
+    if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
+      log_error "Node.js hoặc npm chưa được cài đặt trên server để tự động build frontend!"
+      echo ""
+      echo "Anh có 2 cách xử lý:"
+      echo "  1. Cài Node.js trên server:"
+      echo "     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
+      echo "     sudo apt install -y nodejs"
+      echo "  2. Hoặc build frontend trên máy local (npm run build) rồi đưa thư mục 'build/' lên server."
+      echo ""
+      exit 1
+    fi
     build_frontend
   fi
 
@@ -140,9 +177,9 @@ start_openwebui() {
   cd "${SCRIPT_DIR}/backend"
   if [[ "$reload_flag" == "true" ]]; then
     log_info "Chạy ở chế độ reload (tự động cập nhật khi đổi code backend)..."
-    exec python -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --reload --forwarded-allow-ips "*"
+    exec "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --reload --forwarded-allow-ips "*"
   else
-    exec python -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --forwarded-allow-ips "*"
+    exec "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --forwarded-allow-ips "*"
   fi
 }
 
