@@ -13,6 +13,10 @@ readonly PORT="${PORT:-8080}"
 readonly HOST="${HOST:-0.0.0.0}"
 readonly OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 
+readonly LOG_DIR="${HOME}/.open-webui"
+readonly LOG_FILE="${LOG_DIR}/open-webui.log"
+readonly PID_FILE="${LOG_DIR}/open-webui.pid"
+
 # Màu sắc hiển thị
 readonly GREEN='\033[0;32m'
 readonly BLUE='\033[0;34m'
@@ -226,21 +230,62 @@ start_openwebui() {
   export PORT
   export HOST
 
-  echo ""
-  log_success "================================================="
-  log_success " Khởi chạy Open WebUI (Native):"
-  log_success " -> URL: http://localhost:${PORT}"
-  log_success " -> Kết nối Ollama: ${OLLAMA_BASE_URL}"
-  log_success "================================================="
-  echo ""
-
-  cd "${SCRIPT_DIR}/backend"
-  if [[ "$reload_flag" == "true" ]]; then
-    log_info "Chạy ở chế độ reload (tự động cập nhật khi đổi code backend)..."
-    exec "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --reload --forwarded-allow-ips "*"
-  else
-    exec "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app --host "$HOST" --port "$PORT" --forwarded-allow-ips "*"
+  if is_running; then
+    log_success "Open WebUI đang chạy tại http://localhost:${PORT}"
+    log_info "Log file: ${LOG_FILE}"
+    return 0
   fi
+
+  log_info "Đang khởi động dịch vụ Open WebUI tại http://localhost:${PORT}..."
+  mkdir -p "$LOG_DIR"
+  cd "${SCRIPT_DIR}/backend"
+
+  local reload_arg=()
+  if [[ "$reload_flag" == "true" ]]; then
+    reload_arg=("--reload")
+  fi
+
+  # Khởi chạy uvicorn ở background và chuyển output vào log file (y như Ollama)
+  nohup "${VENV_DIR}/bin/python" -m uvicorn open_webui.main:app \
+    --host "$HOST" \
+    --port "$PORT" \
+    --forwarded-allow-ips "*" \
+    ${reload_arg[@]+"${reload_arg[@]}"} > "$LOG_FILE" 2>&1 &
+
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+
+  # Chờ Open WebUI sẵn sàng (Health check)
+  log_info "Đang kiểm tra tiến trình (PID: $pid)..."
+  local retries=35
+  while ! is_running && [[ $retries -gt 0 ]]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      log_error "Khởi động Open WebUI thất bại! Xem chi tiết log bên dưới:"
+      echo "--------------------------------------------------------"
+      tail -n 25 "$LOG_FILE" 2>/dev/null || true
+      echo "--------------------------------------------------------"
+      rm -f "$PID_FILE"
+      exit 1
+    fi
+    sleep 1
+    retries=$((retries - 1))
+  done
+
+  if is_running; then
+    log_success "Open WebUI đã khởi động thành công tại http://localhost:${PORT}!"
+    log_info "-> URL: http://localhost:${PORT}"
+    log_info "-> Kết nối Ollama: ${OLLAMA_BASE_URL}"
+    log_info "-> Log file: ${LOG_FILE}"
+    echo ""
+  else
+    log_warn "Open WebUI đang khởi động lâu hơn bình thường (có thể đang tải model/khởi tạo CSDL)."
+    log_info "Anh có thể xem log thời gian thực bằng lệnh: ./run-openwebui.sh logs"
+    echo ""
+  fi
+}
+
+is_running() {
+  curl -sf "http://127.0.0.1:${PORT}/health" &>/dev/null
 }
 
 start_dev() {
@@ -263,33 +308,61 @@ start_dev() {
 }
 
 status_openwebui() {
-  local pids
-  pids=$(pgrep -f "open_webui.main:app" 2>/dev/null || true)
-
-  if curl -sf "http://127.0.0.1:${PORT}/health" &>/dev/null; then
+  if is_running; then
+    local pid=""
+    if [[ -f "$PID_FILE" ]]; then
+      pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    fi
     log_success "Open WebUI ĐANG CHẠY tại http://localhost:${PORT}"
-    if [[ -n "$pids" ]]; then
-      echo "  -> Process ID (PID): $pids"
+    if [[ -n "$pid" ]]; then
+      echo "  -> Process ID (PID): $pid"
     fi
     echo "  -> Health check: http://localhost:${PORT}/health [200 OK]"
     echo "  -> Kết nối Ollama: ${OLLAMA_BASE_URL}"
-  elif [[ -n "$pids" ]]; then
-    log_warn "Tiến trình Open WebUI đang chạy (PID: $pids) nhưng cổng $PORT chưa sẵn sàng phản hồi (đang khởi động)."
+    echo "  -> Log file: ${LOG_FILE}"
   else
     log_warn "Open WebUI ĐANG DỪNG (không hoạt động trên cổng ${PORT})."
+    if [[ -f "$LOG_FILE" ]]; then
+      echo "  -> Xem log gần nhất: tail -n 20 ${LOG_FILE}"
+    fi
   fi
 }
 
 stop_openwebui() {
+  local stopped=false
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      log_info "Đang dừng Open WebUI (PID: $pid)..."
+      kill "$pid" 2>/dev/null || true
+      stopped=true
+    fi
+    rm -f "$PID_FILE"
+  fi
+
   local pids
   pids=$(pgrep -f "open_webui.main:app" 2>/dev/null || true)
   if [[ -n "$pids" ]]; then
-    log_info "Đang dừng Open WebUI (PID: $pids)..."
+    log_info "Dọn dẹp các tiến trình Open WebUI (PID: $pids)..."
     kill $pids 2>/dev/null || true
-    sleep 1
+    stopped=true
+  fi
+
+  sleep 1
+  if [[ "$stopped" == true ]]; then
     log_success "Đã dừng Open WebUI."
   else
     log_warn "Open WebUI hiện không chạy."
+  fi
+}
+
+show_logs() {
+  if [[ -f "$LOG_FILE" ]]; then
+    log_info "Hiển thị logs Open WebUI (Nhấn Ctrl+C để thoát)..."
+    tail -f "$LOG_FILE"
+  else
+    log_warn "Chưa tìm thấy log file tại $LOG_FILE"
   fi
 }
 
@@ -309,6 +382,9 @@ case "${1:-start}" in
   stop|down)
     stop_openwebui
     ;;
+  logs)
+    show_logs
+    ;;
   build)
     build_frontend
     ;;
@@ -321,17 +397,18 @@ case "${1:-start}" in
     log_success "Cài đặt tất cả dependencies hoàn tất!"
     ;;
   help|-h|--help)
-    echo "Sử dụng: $0 {start|status|stop|dev|build|install|reload}"
-    echo "  start   : Tự chuẩn bị môi trường và chạy Open WebUI (mặc định cổng 8080)"
-    echo "  status  : Kiểm tra xem Open WebUI có đang chạy hay không"
+    echo "Sử dụng: $0 {start|status|logs|stop|dev|build|install|reload}"
+    echo "  start   : Khởi chạy Open WebUI ở background và thông báo khi sẵn sàng"
+    echo "  status  : Kiểm tra trạng thái hoạt động của Open WebUI"
+    echo "  logs    : Xem log realtime của Open WebUI (tail -f)"
     echo "  stop    : Dừng dịch vụ Open WebUI"
-    echo "  dev     : Chạy backend với --reload cho lập trình viên"
+    echo "  dev     : Chạy backend chế độ reload trực tiếp trên terminal"
     echo "  build   : Chỉ build lại frontend từ code mới (npm run build)"
     echo "  install : Cài đặt lại thư viện Python (.venv) và Node.js (node_modules)"
     exit 0
     ;;
   *)
-    echo "Sử dụng: $0 {start|status|stop|dev|build|install|reload}"
+    echo "Sử dụng: $0 {start|status|logs|stop|dev|build|install|reload}"
     exit 1
     ;;
 esac
