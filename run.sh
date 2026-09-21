@@ -21,10 +21,10 @@ readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
 readonly NC='\033[0m' # No Color
 
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_info() { echo -e "${BLUE}[INFO]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 check_docker() {
   if ! command -v docker &>/dev/null; then
@@ -38,15 +38,15 @@ check_docker() {
   fi
 }
 
+GPU_FLAGS=()
 detect_gpu() {
-  local gpu_flags=()
+  GPU_FLAGS=()
   if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
     log_info "Phát hiện NVIDIA GPU, kích hoạt hỗ trợ GPU (--gpus all)..."
-    gpu_flags=("--gpus" "all")
+    GPU_FLAGS=("--gpus" "all")
   else
     log_info "Chạy chế độ CPU (mặc định cho macOS hoặc máy không có NVIDIA GPU)..."
   fi
-  echo "${gpu_flags[@]}"
 }
 
 start_containers() {
@@ -55,23 +55,22 @@ start_containers() {
   # 1. Tạo Docker network nếu chưa tồn tại
   if ! docker network inspect "$NETWORK_NAME" &>/dev/null; then
     log_info "Đang tạo Docker network: $NETWORK_NAME..."
-    docker network create "$NETWORK_NAME"
+    docker network create "$NETWORK_NAME" >/dev/null
   else
     log_info "Docker network '$NETWORK_NAME' đã sẵn sàng."
   fi
 
   # 2. Khởi động Ollama
   log_info "Kiểm tra container Ollama hiện có..."
-  docker rm -f "$OLLAMA_CONTAINER" 2>/dev/null || true
+  docker rm -f "$OLLAMA_CONTAINER" >/dev/null 2>&1 || true
 
-  local gpu_args
-  read -ra gpu_args <<< "$(detect_gpu)"
+  detect_gpu
 
   log_info "Đang khởi động $OLLAMA_CONTAINER trên cổng $OLLAMA_PORT..."
   docker run -d \
     --name "$OLLAMA_CONTAINER" \
     --network "$NETWORK_NAME" \
-    ${gpu_args[@]+"${gpu_args[@]}"} \
+    ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} \
     -p "${OLLAMA_PORT}:11434" \
     -v ollama:/root/.ollama \
     --restart unless-stopped \
@@ -79,7 +78,7 @@ start_containers() {
 
   # 3. Khởi động Open WebUI
   log_info "Kiểm tra container Open WebUI hiện có..."
-  docker rm -f "$WEBUI_CONTAINER" 2>/dev/null || true
+  docker rm -f "$WEBUI_CONTAINER" >/dev/null 2>&1 || true
 
   log_info "Đang khởi động $WEBUI_CONTAINER trên cổng $WEBUI_PORT..."
   docker run -d \
