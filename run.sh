@@ -146,7 +146,9 @@ start_all() {
     --name "$WEBUI_CONTAINER" \
     --network "$NETWORK_NAME" \
     -p "${WEBUI_PORT}:8080" \
+    -e "ENABLE_OLLAMA_API=true" \
     -e "OLLAMA_BASE_URL=http://${OLLAMA_CONTAINER}:11434" \
+    -e "OLLAMA_BASE_URLS=http://${OLLAMA_CONTAINER}:11434" \
     -e "WEBUI_SECRET_KEY=" \
     -v open-webui:/app/backend/data \
     --add-host=host.docker.internal:host-gateway \
