@@ -12,7 +12,7 @@ readonly OLLAMA_CONTAINER="ollama"
 readonly WEBUI_CONTAINER="open-webui"
 
 readonly OLLAMA_IMAGE="ollama/ollama:latest"
-readonly WEBUI_IMAGE="open-webui:local"
+readonly WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
 
 readonly WEBUI_PORT="${OPEN_WEBUI_PORT:-3000}"
 readonly OLLAMA_PORT="${OLLAMA_PORT:-11434}"
@@ -71,28 +71,12 @@ cleanup_native_processes() {
   pkill -f "ollama serve" 2>/dev/null || true
 }
 
-build_openwebui() {
+pull_openwebui_image() {
   check_docker
-  log_info "Dọn dẹp build cache cũ để đảm bảo đủ dung lượng ổ đĩa..."
-  docker builder prune -f >/dev/null 2>&1 || true
-
-  log_info "Bắt đầu build Docker image '$WEBUI_IMAGE' từ mã nguồn local..."
-  log_info "(Sử dụng USE_SLIM=true để tối ưu dung lượng và build nhanh hơn)"
-
-  if ! docker build --build-arg USE_SLIM=true -t "$WEBUI_IMAGE" "$SCRIPT_DIR"; then
-    log_warn "Build local thất bại (thường do ổ cứng không đủ dung lượng build từ source)."
-    read -rp "Anh có muốn chuyển sang dùng image chính thức prebuilt (ghcr.io/open-webui/open-webui:main) không? [Y/n]: " ans
-    if [[ "${ans,,}" =~ ^(y|yes|)$ ]]; then
-      log_info "Đang kéo image chính thức đã compile sẵn..."
-      docker pull ghcr.io/open-webui/open-webui:main
-      docker tag ghcr.io/open-webui/open-webui:main "$WEBUI_IMAGE"
-      log_success "Đã chuẩn bị xong image Open WebUI!"
-    else
-      log_error "Hủy thao tác. Vui lòng giải phóng thêm ổ cứng và thử lại."
-      exit 1
-    fi
-  else
-    log_success "Build image '$WEBUI_IMAGE' thành công!"
+  if ! docker image inspect "$WEBUI_IMAGE" &>/dev/null; then
+    log_info "Đang kéo image chính thức Open WebUI ($WEBUI_IMAGE)..."
+    docker pull "$WEBUI_IMAGE"
+    log_success "Kéo image Open WebUI thành công!"
   fi
 }
 
@@ -127,15 +111,14 @@ start_all() {
     --name "$OLLAMA_CONTAINER" \
     --network "$NETWORK_NAME" \
     ${GPU_FLAGS[@]+"${GPU_FLAGS[@]}"} \
+    -e "OLLAMA_FLASH_ATTENTION=1" \
     -p "${host_ollama_port}:11434" \
     -v ollama:/root/.ollama \
     --restart unless-stopped \
     "$OLLAMA_IMAGE" >/dev/null
 
-  # 3. Build image Open WebUI nếu chưa có
-  if ! docker image inspect "$WEBUI_IMAGE" &>/dev/null; then
-    build_openwebui
-  fi
+  # 3. Kéo image Open WebUI chính thức nếu chưa có
+  pull_openwebui_image
 
   # 4. Khởi động Container 2: Open WebUI
   log_info "Khởi tạo container Open WebUI..."
@@ -223,8 +206,10 @@ case "${1:-start}" in
   start|all|up|prod)
     start_all
     ;;
-  build)
-    build_openwebui
+  update|pull-images)
+    docker pull "$OLLAMA_IMAGE"
+    docker pull "$WEBUI_IMAGE"
+    log_success "Đã cập nhật image mới nhất cho cả 2 container!"
     ;;
   status)
     status_all
@@ -245,13 +230,13 @@ case "${1:-start}" in
     pull_model "${1:-}"
     ;;
   help|-h|--help)
-    echo "Sử dụng: $0 [start|build|status|logs [ollama|webui]|pull <model>|stop|restart]"
-    echo "  $0 (hoặc $0 start)    : Build code local & khởi chạy 2 container"
-    echo "  $0 build              : Chỉ build lại image Open WebUI từ source code"
+    echo "Sử dụng: $0 [start|status|update|logs [ollama|webui]|pull <model>|stop|restart]"
+    echo "  $0 (hoặc $0 start)    : Khởi chạy 2 container (Open WebUI & Ollama)"
+    echo "  $0 update             : Cập nhật image mới nhất từ registry"
     echo "  $0 status             : Xem trạng thái 2 container Docker"
     echo "  $0 logs               : Xem log của Open WebUI container"
     echo "  $0 logs ollama        : Xem log của Ollama container"
-    echo "  $0 pull <tên_model>   : Tải model AI vào Ollama (ví dụ: ./run.sh pull llama3.2)"
+    echo "  $0 pull <tên_model>   : Tải model AI vào Ollama (ví dụ: ./run.sh pull qwen2.5:7b)"
     echo "  $0 stop               : Dừng và gỡ cả 2 container"
     echo "  $0 restart            : Khởi động lại toàn bộ"
     exit 0
