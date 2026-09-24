@@ -12,7 +12,7 @@ readonly OLLAMA_CONTAINER="ollama"
 readonly WEBUI_CONTAINER="open-webui"
 
 readonly OLLAMA_IMAGE="ollama/ollama:latest"
-readonly WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
+WEBUI_IMAGE="${OPEN_WEBUI_IMAGE:-openwebui/open-webui:main}"
 
 readonly WEBUI_PORT="${OPEN_WEBUI_PORT:-3000}"
 readonly OLLAMA_PORT="${OLLAMA_PORT:-11434}"
@@ -40,6 +40,16 @@ check_docker() {
     log_error "Docker daemon chưa khởi động (hoặc người dùng chưa có quyền docker)!"
     echo "-> Khởi động Docker Desktop (trên macOS) hoặc: sudo systemctl start docker (trên Linux)" >&2
     exit 1
+  fi
+
+  # Kiểm tra dung lượng ổ đĩa trống (tránh lỗi No space left on device)
+  if command -v df &>/dev/null; then
+    local free_space_kb
+    free_space_kb=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$free_space_kb" ] && [ "$free_space_kb" -lt 5242880 ] 2>/dev/null; then
+      local free_gb=$((free_space_kb / 1024 / 1024))
+      log_warn "Ổ đĩa phân vùng root chỉ còn khoảng ${free_gb}GB trống! Nếu quá trình tải bị đứng, hãy dọn bớt đĩa (docker system prune -f)."
+    fi
   fi
 }
 
@@ -73,11 +83,36 @@ cleanup_native_processes() {
 
 pull_openwebui_image() {
   check_docker
-  if ! docker image inspect "$WEBUI_IMAGE" &>/dev/null; then
-    log_info "Đang kéo image chính thức Open WebUI ($WEBUI_IMAGE)..."
-    docker pull "$WEBUI_IMAGE"
-    log_success "Kéo image Open WebUI thành công!"
+  # Nếu đã có image cục bộ (dù là ghcr.io hay openwebui từ docker hub) thì dùng luôn
+  if docker image inspect "$WEBUI_IMAGE" &>/dev/null; then
+    log_info "Image Open WebUI ($WEBUI_IMAGE) đã có sẵn trên máy."
+    return 0
   fi
+  if docker image inspect "openwebui/open-webui:main" &>/dev/null; then
+    WEBUI_IMAGE="openwebui/open-webui:main"
+    log_info "Sử dụng image Docker Hub 'openwebui/open-webui:main' đã có sẵn trên máy."
+    return 0
+  fi
+  if docker image inspect "ghcr.io/open-webui/open-webui:main" &>/dev/null; then
+    WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
+    log_info "Sử dụng image GHCR 'ghcr.io/open-webui/open-webui:main' đã có sẵn trên máy."
+    return 0
+  fi
+
+  log_info "Đang kéo image Open WebUI ($WEBUI_IMAGE)..."
+  if ! docker pull "$WEBUI_IMAGE"; then
+    log_warn "Không thể kéo được từ '$WEBUI_IMAGE' (do kết nối mạng hoặc registry bị nghẽn)."
+    if [ "$WEBUI_IMAGE" != "openwebui/open-webui:main" ]; then
+      log_info "Chuyển sang kéo từ Docker Hub: openwebui/open-webui:main..."
+      WEBUI_IMAGE="openwebui/open-webui:main"
+      docker pull "$WEBUI_IMAGE"
+    else
+      log_info "Chuyển sang kéo từ GHCR: ghcr.io/open-webui/open-webui:main..."
+      WEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
+      docker pull "$WEBUI_IMAGE"
+    fi
+  fi
+  log_success "Kéo image Open WebUI thành công ($WEBUI_IMAGE)!"
 }
 
 start_all() {
